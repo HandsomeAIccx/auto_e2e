@@ -1,5 +1,17 @@
 # AutoE2E Architecture
 
+## Shared BEV occupancy and flow
+
+The optional shared-BEV perception branch adds 3D semantic occupancy and planar
+physical velocity alongside trajectory controls and the existing 8-channel BEV
+semantic map. Enable it with `enable_occupancy=True`; inference can return all
+heads with `return_auxiliary=True`. The original trajectory-only interface remains
+the default. See [configuration, training and inference](docs/shared_bev_occ_flow.md)
+and [the joint configuration](configs/shared_bev_occ_flow.json).
+
+From `Model/`, run `python -m inference.occ_flow_demo --device cpu` for a data-free
+real-backbone optimizer and stream-inference smoke with NPZ/JSON/SVG exports.
+
 ## Architecture Diagram
 > **Note:** The architecture diagram is outdated and does not reflect the current implementation (separate map encoder branch, BEV fusion as default, residual map fusion). It will be updated in a follow-up PR.
 

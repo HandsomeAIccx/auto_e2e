@@ -11,6 +11,7 @@ from .trajectory_planning import build_planner
 from .map_encoder import build_map_encoder, build_map_bev_fusion
 from .temporal_memory import build_temporal_memory
 from .reasoning.horizon_reasoning_head import HorizonReasoningHead
+from .occupancy import BEVOccupancyFlowHead, DEFAULT_PC_RANGE
 
 
 class ReactiveE2E(nn.Module):
@@ -29,7 +30,8 @@ class ReactiveE2E(nn.Module):
                  reasoning_kwargs=None,
                  enable_bev_segmentation=False,
                  bev_segmentation_classes=8,
-                 enable_route_reconstruction=False):
+                 enable_route_reconstruction=False,
+                 enable_occupancy=False, occupancy_kwargs=None):
         super(ReactiveE2E, self).__init__()
 
         # Camera backbone feature extractor
@@ -90,6 +92,15 @@ class ReactiveE2E(nn.Module):
             )
             if enable_bev_segmentation
             else None
+        )
+        okw = dict(occupancy_kwargs or {})
+        source_pc_range = tuple(vfk.get("pc_range", DEFAULT_PC_RANGE))
+        if "source_pc_range" in okw and tuple(okw["source_pc_range"]) != source_pc_range:
+            raise ValueError("occupancy source range must match camera BEV range")
+        okw["source_pc_range"] = source_pc_range
+        self.OccupancyFlowHead = (
+            BEVOccupancyFlowHead(embed_dim=embed_dim, **okw)
+            if enable_occupancy else None
         )
         if enable_route_reconstruction and map_fusion_mode != "residual":
             raise ValueError(
@@ -189,6 +200,9 @@ class ReactiveE2E(nn.Module):
                 mode="train", return_auxiliary=False,
                 compute_bev_segmentation=True,
                 compute_route_reconstruction=True,
+                compute_occupancy=True, return_bev_features=False,
+                history_bev_features=None, history_to_current=None,
+                history_age_s=None, history_valid=None,
                 **kwargs):
         """
         Run the reactive end-to-end autonomous-driving pipeline.
@@ -209,6 +223,14 @@ class ReactiveE2E(nn.Module):
             mode: "train" returns enabled auxiliary predictions.
             return_auxiliary: also return enabled auxiliary predictions during
                 inference, for offline Dashboard artifact generation.
+            history_bev_features: optional [B,T,C,Hbev,Wbev] camera-only BEVs.
+            history_to_current: [B,T,4,4] transforms from each past ego frame
+                to the current ego frame. Planar rigid transforms are required.
+            history_age_s: finite positive [B,T] ages; future observations
+                cannot enter the current occupancy/flow prediction.
+            history_valid: optional [B,T] padding/availability mask.
+            compute_occupancy: execute the enabled OCC/flow head when emitting
+                auxiliary outputs. Planner inputs remain independent of it.
 
         Returns:
             trajectory (B, num_timesteps * num_signals), or
@@ -225,6 +247,18 @@ class ReactiveE2E(nn.Module):
         )
         emit_auxiliary = mode == "train" or bool(return_auxiliary)
         aux_outputs = {}
+        if self.OccupancyFlowHead is None and any(value is not None for value in (
+            history_bev_features, history_to_current, history_age_s, history_valid,
+        )):
+            raise ValueError("BEV history requires enable_occupancy=True")
+        if return_bev_features:
+            aux_outputs["camera_bev_features"] = image_bev
+        if self.OccupancyFlowHead is not None and emit_auxiliary and compute_occupancy:
+            aux_outputs.update(self.OccupancyFlowHead(
+                image_bev, history_bev_features=history_bev_features,
+                history_to_current=history_to_current,
+                history_age_s=history_age_s, history_valid=history_valid,
+            ))
         if (
             self.BEVSegmentationHead is not None
             and emit_auxiliary

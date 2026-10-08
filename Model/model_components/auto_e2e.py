@@ -82,7 +82,8 @@ class AutoE2E(nn.Module):
                  reasoning_kwargs: Optional[Dict[str, Any]] = None,
                  enable_bev_segmentation=False,
                  bev_segmentation_classes=8,
-                 enable_route_reconstruction=False):
+                 enable_route_reconstruction=False,
+                 enable_occupancy=False, occupancy_kwargs=None):
         super(AutoE2E, self).__init__()
 
         # Reactive model which runs at 10Hz and processes multi-camera inputs
@@ -110,7 +111,9 @@ class AutoE2E(nn.Module):
                  reasoning_kwargs=reasoning_kwargs,
                  enable_bev_segmentation=enable_bev_segmentation,
                  bev_segmentation_classes=bev_segmentation_classes,
-                 enable_route_reconstruction=enable_route_reconstruction)
+                 enable_route_reconstruction=enable_route_reconstruction,
+                 enable_occupancy=enable_occupancy,
+                 occupancy_kwargs=occupancy_kwargs)
         self.enable_reasoning = enable_reasoning
 
         # World Action Model (slow, ~1Hz): encodes the multi-camera history into
@@ -165,6 +168,37 @@ class AutoE2E(nn.Module):
             self.visual_history_buffer = RollingHistoryBuffer(
                 history_len=self.visual_history_buffer.history_len)
 
+    def encode_bev_history(self, camera_history, *, projections=None,
+                           geometry_type=None, image_transforms=None,
+                           detach=True):
+        """Encode [B,T,V,3,H,W] past images with the shared camera network.
+
+        Each frame must use its own camera projection in its own ego frame.
+        Returned BEVs are unaligned: supply history_to_current on forward.
+        This uses an explicit window and never modifies a global stream cache.
+        """
+        if camera_history.ndim != 6 or camera_history.shape[1] == 0:
+            raise ValueError("camera_history must be non-empty [B,T,V,3,H,W]")
+        count = camera_history.shape[1]
+        if projections is not None and len(projections) != count:
+            raise ValueError("one projection is required per history frame")
+        if image_transforms is not None and len(image_transforms) != count:
+            raise ValueError("one image transform is required per history frame")
+        if image_transforms is None:
+            from .view_fusion.projection import ImageTransform
+            frame = ImageTransform(model_input_size=(camera_history.shape[-1], camera_history.shape[-2]))
+            image_transforms = [frame]*count
+        values = []
+        with torch.set_grad_enabled(torch.is_grad_enabled() and not detach):
+            for index in range(count):
+                values.append(self.Reactive_E2E.encode_camera_bev(
+                    camera_history[:, index],
+                    projection=None if projections is None else projections[index],
+                    geometry_type=geometry_type,
+                    image_transform=image_transforms[index],
+                ))
+        return torch.stack(values, dim=1)
+
 
     def forward(self, camera_tiles, map_context, visual_history,
                 egomotion_history, route_mask=None, map_valid=None,
@@ -175,6 +209,9 @@ class AutoE2E(nn.Module):
                 return_auxiliary=False,
                 compute_bev_segmentation=True,
                 compute_route_reconstruction=True,
+                compute_occupancy=True, return_bev_features=False,
+                history_bev_features=None, history_to_current=None,
+                history_age_s=None, history_valid=None,
                 **kwargs):
         """
         Run the full autonomous-driving pipeline.
@@ -206,6 +243,11 @@ class AutoE2E(nn.Module):
                 "rectified_pinhole", "ftheta", "pseudo") passed to BEV fusion.
             image_transform: Optional ImageTransform for the model-input frame.
             mode: "train" also returns aux branch outputs for their losses.
+            return_auxiliary: emit enabled BEV, OCC/flow and route heads in
+                inference. Default inference still returns controls only.
+            history_bev_features / history_to_current / history_age_s:
+                camera-only spatial history for the OCC/flow head, separate
+                from the World Model's history_frames and compressed vectors.
 
         Returns:
             trajectory, or (trajectory, aux_outputs) in train mode with a branch on.
@@ -304,6 +346,11 @@ class AutoE2E(nn.Module):
             return_auxiliary=return_auxiliary,
             compute_bev_segmentation=compute_bev_segmentation,
             compute_route_reconstruction=compute_route_reconstruction,
+            compute_occupancy=compute_occupancy,
+            return_bev_features=return_bev_features,
+            history_bev_features=history_bev_features,
+            history_to_current=history_to_current,
+            history_age_s=history_age_s, history_valid=history_valid,
             trajectory_target=trajectory_target,
             **kwargs,
         )

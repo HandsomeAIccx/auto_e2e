@@ -1,0 +1,34 @@
+{
+  "model_kwargs": {
+    "backbone": "swin_v2_tiny",
+    "is_pretrained": true,
+    "num_views": 7,
+    "image_feature_size": 64,
+    "view_fusion_kwargs": {
+      "bev_h": 450,
+      "bev_w": 300,
+      "pc_range": [-60.0, -60.0, -5.0, 120.0, 60.0, 3.0]
+    },
+    "map_type": "semantic_raster",
+    "map_context_channels": 14,
+    "route_channels": 2,
+    "planner_mode": "gru",
+    "enable_world_model": false,
+    "enable_reasoning": false,
+    "enable_bev_segmentation": true,
+    "enable_route_reconstruction": true,
+    "enable_occupancy": true,
+    "occupancy_kwargs": {
+      "grid_shape": [16, 180, 120],
+      "hidden_channels": 32,
+      "decay_seconds": 1.0
+    }
+  },
+  "objective_kwargs": {
+    "trajectory_weight": 1.0,
+    "bev_weight": 1.0,
+    "route_weight": 1.0,
+    "occupancy_weight": 1.0,
+    "flow_weight": 1.0
+  }
+}
